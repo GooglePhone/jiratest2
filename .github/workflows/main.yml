@@ -1,0 +1,74 @@
+name: Update Jira Fix Versions from Tag
+
+on:
+  push:
+    tags:
+      - '*'  # 所有 tag 都會觸發
+
+jobs:
+  update-jira:
+    runs-on: ubuntu-latest
+
+    env:
+      VERSION_NAME_PREFIX: "adminweb - "  # ← 專案名稱
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update Jira Issues with Fix Version
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          FIX_VERSION="${VERSION_NAME_PREFIX}${TAG_NAME}"
+          echo "🧷 Tag: $TAG_NAME"
+          echo "🔖 Fix Version: $FIX_VERSION"
+
+          # 取得 commit message
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          echo "📄 Commit message: $COMMIT_MSG"
+
+          # 抓 Jira issue key，例如 TEST-123
+          ISSUE_KEYS=$(echo "$COMMIT_MSG" | grep -oE '[A-Z]+-[0-9]+' | sort -u)
+
+          if [ -z "$ISSUE_KEYS" ]; then
+            echo "⚠️ No Jira issue keys found. Exiting."
+            exit 0
+          fi
+
+          for ISSUE_KEY in $ISSUE_KEYS; do
+            echo "🔧 Updating $ISSUE_KEY"
+
+            PROJECT_KEY="${ISSUE_KEY%%-*}"
+
+            # 先建立版本（忽略錯誤）
+            curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+              -X POST \
+              -H "Content-Type: application/json" \
+              --data "{\"name\":\"$FIX_VERSION\",\"project\":\"$PROJECT_KEY\"}" \
+              "$JIRA_BASE_URL/rest/api/3/version" > /dev/null
+
+            # 取得目前 issue 的 fixVersions
+            CURRENT_FIX_VERSIONS=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+              -X GET \
+              -H "Content-Type: application/json" \
+              "$JIRA_BASE_URL/rest/api/3/issue/$ISSUE_KEY?fields=fixVersions" \
+              | jq -r '.fields.fixVersions[].name')
+
+            # 組合新的版本列表（保留原有版本，加上新的）
+            ALL_VERSIONS=$(echo -e "$CURRENT_FIX_VERSIONS\n$FIX_VERSION" | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({name: .})')
+
+            echo "📦 All fixVersions to set: $ALL_VERSIONS"
+
+            # 更新 Jira issue
+            curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+              -X PUT \
+              -H "Content-Type: application/json" \
+              --data "{\"fields\": {\"fixVersions\": $ALL_VERSIONS}}" \
+              "$JIRA_BASE_URL/rest/api/3/issue/$ISSUE_KEY"
+
+            echo "✅ Updated $ISSUE_KEY"
+          done
