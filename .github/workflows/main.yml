@@ -48,6 +48,23 @@ jobs:
               --data "{\"name\":\"$FIX_VERSION\",\"project\":\"$PROJECT_KEY\"}" \
               "$JIRA_BASE_URL/rest/api/3/version" > /dev/null
 
+            # 🕒 等待版本建立完成
+            echo "⏳ Waiting for version \"$FIX_VERSION\" to be available in Jira..."
+            for i in {1..10}; do
+              EXISTS=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+                -X GET \
+                -H "Content-Type: application/json" \
+                "$JIRA_BASE_URL/rest/api/3/project/$PROJECT_KEY/versions" | jq -r '.[] | select(.name == "'"$FIX_VERSION"'") | .id')
+
+              if [ -n "$EXISTS" ]; then
+                echo "✅ Version \"$FIX_VERSION\" is now available (id: $EXISTS)"
+                break
+              fi
+
+              echo "⏱️  Version not found yet, retrying in 1s... ($i/10)"
+              sleep 1
+            done
+
             # 取得原本的 fixVersions
             CURRENT_FIX_VERSIONS=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
               -X GET \
